@@ -174,7 +174,7 @@ def process_video(video_path, processor, s=None, e=None, aspect_ratio='pad', num
 
             fps = 25
             num_frames_of_video = len(gif_reader)
-        else:
+        else: # video
             vreader = VideoReader(video_path, ctx=cpu(0), num_threads=1)
 
             fps = vreader.get_avg_fps()
@@ -190,7 +190,7 @@ def process_video(video_path, processor, s=None, e=None, aspect_ratio='pad', num
         # 3. Sampling frame indices 
         if num_frames is None:
             sampled_frame_indices = [frame_indices[i] for i in frame_sample(duration, mode='fps', fps=fps)]
-        else:
+        else: # dô 
             sampled_frame_indices = [frame_indices[i] for i in frame_sample(duration, mode='uniform', num_frames=num_frames)]
 
         # 4. Acquire frame data

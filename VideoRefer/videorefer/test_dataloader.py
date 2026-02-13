@@ -41,20 +41,27 @@ data_args.is_pretraining = False
 data_args.video_processor = transformers.SiglipImageProcessor.from_pretrained("google/siglip-so400m-patch14-384")
 
 dataset = LazySupervisedDataset(
-    data_path='videorefer/data/marine.json', # USE ABSOLUTE PATH
+    data_path='videorefer/data/marine_video_token.json', # USE ABSOLUTE PATH
     tokenizer=tokenizer,
     data_args=data_args
 )
 
 print(f"Dataset length: {len(dataset)}")
-sample = dataset[0]
+sample = dataset[1]
 print("Keys in sample:", sample.keys())
 
 # Decode the input_ids to check if time tokens are present
 input_ids = sample['input_ids']
-decoded_text = tokenizer.decode(input_ids, skip_special_tokens=False)
+print("\n--- Input IDs ---")
+print(input_ids)
+
+label_ids = sample['labels']
+print("\n--- Label IDs ---")
+print(label_ids)
+
+decoded_text = dataset.tokenizer.decode(input_ids, skip_special_tokens=False)
 print("\n--- Decoded Sample ---")
-print(decoded_text)
+print(decoded_text[0])
 print("----------------------")
 
 # Verify if any time token exists in decoded text

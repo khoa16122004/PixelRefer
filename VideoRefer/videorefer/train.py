@@ -249,6 +249,7 @@ def preprocess_multimodal(
                     replace_token = modal_token
                     # TODO: fix this for multimedia, e.g., <video>, <audio>, etc.
                     sentence["value"] = sentence["value"].replace(modal_token, replace_token)
+
     return sources
 
 
@@ -295,16 +296,10 @@ def inject_time_tokens(
 def preprocess_timestamps(timestamps: List[List[float]], duration: float, vocab_size: int) -> torch.Tensor:
     starts, ends = [], []
 
-    print('timestamp', timestamps)
-    print('duration', duration)
-    print('vocab_size', vocab_size)
-
     for timestamp in timestamps:
         starts.append(timestamp[0])
         ends.append(timestamp[1])
 
-    print('starts', starts)
-    print('ends', ends)
 
     start_tensor = torch.tensor(starts, dtype=torch.float32)
     end_tensor = torch.tensor(ends, dtype=torch.float32)
@@ -321,7 +316,6 @@ class LazySupervisedDataset(Dataset):
         super(LazySupervisedDataset, self).__init__()
         list_data_dict = json.load(open(data_path, "r"))
         list_data_dict = self.llm_response_selection(list_data_dict, data_args.llm_response_selector)
-        print(len(list_data_dict), "samples loaded from", data_path)
         
         rank0_print("Formatting inputs...Skip in lazy mode")
         self.tokenizer = tokenizer
@@ -397,7 +391,6 @@ class LazySupervisedDataset(Dataset):
 
         # if jmage ignore
         if 'image' in sources[0]:
-            # print(sources[0]['image'])
             image_file = self.list_data_dict[i]['image']
             image_file = os.path.join(self.data_args.data_folder, image_file)
 
@@ -418,38 +411,37 @@ class LazySupervisedDataset(Dataset):
             # video path proccessing            
             video_file = self.list_data_dict[i]['video']
             video_file = os.path.join(self.data_args.data_folder, video_file)
-            print("File exists:", os.path.exists(video_file))
-            all_frames = set()
-            
-            # # frame proccessing: uisng later
-            try: 
-                if False and 'annotation' in sources[0]:
-                    for ann in sources[0]['annotation']:
-                        all_frames.update(list(ann.keys()))
-                    all_frames = list(all_frames)
-                    frame_nums = len(all_frames)
-                    for ann in sources[0]['annotation']:
-                        frame_list = list(ann.keys())
-                        indices = []
-                        for frame in frame_list:
-                            indices.append(all_frames.index(frame))
-                        ann_indices.append(indices)
-                else: 
-                    all_frames.add(0)
-                    ann_indices.append([0])
 
-                all_frames = [int(f) for f in all_frames]
-                video, frame, height, width, _ = process_video(video_file, video_processor, aspect_ratio=self.data_args.image_aspect_ratio, num_frames=num_frames, frame_idx=all_frames) #frame [1,3,336,336]
-            except Exception as e:
-                traceback.print_exc()
-                backup_idx = random.randint(0, len(self.list_data_dict)-1)
-                print(f"Encounted error when reading video {video_file}, use {backup_idx}-th example instead!!!")
-                return self.__getitem__(backup_idx)
+            # all_frames = set()
+            # # frame proccessing: uisng later
+            # try: 
+            #     if False and 'annotation' in sources[0]:
+            #         for ann in sources[0]['annotation']:
+            #             all_frames.update(list(ann.keys())) # frame_id
+            #         all_frames = list(all_frames)
+            #         frame_nums = len(all_frames)
+            #         for ann in sources[0]['annotation']:
+            #             frame_list = list(ann.keys())
+            #             indices = []
+            #             for frame in frame_list:
+            #                 indices.append(all_frames.index(frame))
+            #             ann_indices.append(indices)
+            #     else: 
+            #         all_frames.add(0)
+            #         ann_indices.append([0])
+
+                # all_frames = [int(f) for f in all_frames]
+
+                # video, frame, height, width, _ = process_video(video_file, video_processor, aspect_ratio=self.data_args.image_aspect_ratio, num_frames=num_frames, frame_idx=all_frames) #frame [1,3,336,336]
+                
+            # except Exception as e:
+            #     traceback.print_exc()
+            #     backup_idx = random.randint(0, len(self.list_data_dict)-1)
+            #     print(f"Encounted error when reading video {video_file}, use {backup_idx}-th example instead!!!")
+            #     return self.__getitem__(backup_idx)
 
             # replement frame proccessing
-            video, frame, height, width, duration = process_video(video_file, video_processor, aspect_ratio=self.data_args.image_aspect_ratio, num_frames=num_frames, frame_idx=all_frames) #frame [1,3,336,336]
-
-            # place <video> tag to question head.
+            video, frame, height, width, duration = process_video(video_file, video_processor, aspect_ratio=self.data_args.image_aspect_ratio, num_frames=num_frames, frame_idx=None) #frame [1,3,336,336]
             modal_token = "<video>"
             
             # NOTE: We must update sources in-place or assign back, because preprocess() uses sources.
@@ -463,43 +455,37 @@ class LazySupervisedDataset(Dataset):
             # Inject time tokens into conversation
             sources[0] = inject_time_tokens(sources[0], num_bins=NUM_TIME_BINS, duration=duration)
             conversations = copy.deepcopy([e["conversation"] for e in sources])
-
             
-            # time_stamps tensor is no longer needed since we tokenized them into the text
-            # time_stamps = preprocess_timestamps(...) 
-            # print("Time stamps: ", time_stamps)
-            # raise
         else:
             modal_token = None
             conversations = copy.deepcopy([e["conversation"] for e in sources])
         
-        print("Conversations: ", conversations[0])
 
         # ========== segmentation mask: ignore
         masks = []
 
-        # if 'annotation' in self.list_data_dict[i]:
-        #     if 'height' in self.list_data_dict[i]:
-        #         h = self.list_data_dict[i]['height']
-        #         w = self.list_data_dict[i]['width']
-        #     else:
-        #         h = None
-        #         w = None
+        if 'annotation' in self.list_data_dict[i]:
+            if 'height' in self.list_data_dict[i]:
+                h = self.list_data_dict[i]['height']
+                w = self.list_data_dict[i]['width']
+            else:
+                h = None
+                w = None
 
-        #     for anns in self.list_data_dict[i]['annotation']:
-        #         for ann_idx in anns.keys():
-        #             if anns[ann_idx]['segmentation'] is None:
-        #                 mask = np.zeros((height, width))
-        #             else:
-        #                 mask = annToMask(anns[ann_idx]['segmentation'], h, w)
-        #             masks.append(mask)
+            for anns in self.list_data_dict[i]['annotation']:
+                for ann_idx in anns.keys():
+                    if anns[ann_idx]['segmentation'] is None:
+                        mask = np.zeros((height, width))
+                    else:
+                        mask = annToMask(anns[ann_idx]['segmentation'], h, w)
+                    masks.append(mask)
                     
-        #     if 'image' in self.list_data_dict[i]:
-        #         ann_indices = [[0]]*len(self.list_data_dict[i]['annotation'])
+            if 'image' in self.list_data_dict[i]:
+                ann_indices = [[0]]*len(self.list_data_dict[i]['annotation'])
                 
-        #     masks = np.array(masks)      
-        # else:
-        #     masks = np.zeros((1, 336, 336))
+            masks = np.array(masks)      
+        else:
+            masks = np.zeros((1, 336, 336))
             
         # ============ tokenizer proccessing ========
         # Ensure conversations is updated and ready
@@ -508,29 +494,29 @@ class LazySupervisedDataset(Dataset):
              # s["conversation"] is [[msg], [msg]] -> Single Conversation
              conversations = []
              for s in sources:
-                 events = s["conversation"]
-                 # Extract all assistant responses (now with time tokens)
-                 # structure of event is [{'from': 'Gemini', 'value': '<t>...'}]
-                 
-                 # Join all parts with a separator (e.g., space or newline)
-                 # Assuming each event has 1 message which is the assistant response
-                 full_response_parts = []
-                 for event in events:
-                     for msg in event:
-                         full_response_parts.append(msg['value'])
-                 
-                 full_response = " ".join(full_response_parts)
-                 
-                 # Create the single-turn conversation
-                 # TODO: Make the system prompt configurable or random? 
-                 # For now, using a standard Vid2Seq-like prompt.
-                 user_prompt = "Describe the video in detail with timestamps."
-                 
-                 new_conv = [
-                     {'from': 'human', 'value': user_prompt},
-                     {'from': 'gpt', 'value': full_response}
-                 ]
-                 conversations.append(new_conv)
+                events = s["conversation"]
+                # Extract all assistant responses (now with time tokens)
+                # structure of event is [{'from': 'Gemini', 'value': '<t>...'}]
+                
+                # Join all parts with a separator (e.g., space or newline)
+                # Assuming each event has 1 message which is the assistant response
+                full_response_parts = []
+                for event in events:
+                    for msg in event:
+                        full_response_parts.append(msg['value'])
+                
+                full_response = " ".join(full_response_parts)
+                
+                # Create the single-turn conversation
+                # TODO: Make the system prompt configurable or random? 
+                # For now, using a standard Vid2Seq-like prompt.
+                user_prompt = "<video>\nDescribe the video in detail with timestamps."
+                
+                new_conv = [
+                    {'from': 'human', 'value': user_prompt},
+                    {'from': 'gpt', 'value': full_response}
+                ]
+                conversations.append(new_conv)
         
         if self.data_args.is_pretraining:
             data_dict = preprocess_plain(conversations, self.tokenizer, modal_token=modal_token)
