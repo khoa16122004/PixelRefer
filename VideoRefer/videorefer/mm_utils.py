@@ -282,7 +282,7 @@ def process_video(video_path, processor, s=None, e=None, aspect_ratio='pad', num
         if frame_data is not None:
             frame_data = [Image.fromarray(f.numpy() if isinstance(f, torch.Tensor) else f) for f in frame_data]
             frame_data = processor.preprocess(frame_data, return_tensors='pt')['pixel_values']
-    return video, frame_data, height, width, duration
+    return video, frame_data, height, width, durations
 
 
 def process_video_old(video_path, processor, aspect_ratio='pad', num_frames=NUM_FRAMES, image_grid=False, sample_scheme='uniform'):

@@ -44,6 +44,8 @@ from videorefer.videorefer_trainer import (VideoReferTrainer,
 )
 import numpy as np
 
+from data_utils import timestampify_pt
+
 # NOTE: fast tokenizer warning issue: https://github.com/huggingface/transformers/issues/5486   
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
@@ -246,6 +248,25 @@ def preprocess_multimodal(
                     sentence["value"] = sentence["value"].replace(modal_token, replace_token)
     return sources
 
+def preprocess_timestamps(timestamps: List[List[float]], duration: float, vocab_size: int) -> torch.Tensor:
+    starts, ends = [], []
+
+    print('timestamp', timestamps)
+    print('duration', duration)
+    print('vocab_size', vocab_size)
+
+    for timestamp in timestamps:
+        starts.append(timestamp[0])
+        ends.append(timestamp[1])
+
+    print('starts', starts)
+    print('ends', ends)
+
+    start_tensor = torch.tensor(starts, dtype=torch.float32)
+    end_tensor = torch.tensor(ends, dtype=torch.float32)
+
+    timestamp_tensor = timestampify_pt(start_tensor, end_tensor, duration, vocabulary_size=vocab_size)
+    return timestamp_tensor
 
 class LazySupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
@@ -262,6 +283,8 @@ class LazySupervisedDataset(Dataset):
         self.tokenizer = tokenizer
         self.list_data_dict = list_data_dict
         self.data_args = data_args
+
+        self.vocab_size = len(tokenizer)
 
     def __len__(self):
         return len(self.list_data_dict)
@@ -314,21 +337,22 @@ class LazySupervisedDataset(Dataset):
         return length_list
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
-        conversations = self.list_data_dict[i]
+        sources = self.list_data_dict[i]
         # =----- not need now: ignore
         # image_processor = self.data_args.image_processor
         video_processor = self.data_args.video_processor
 
-        # num_frames = NUM_FRAMES if self.data_args.num_frames is None else self.data_args.num_frames
+        num_frames = NUM_FRAMES if self.data_args.num_frames is None else self.data_args.num_frames
  
         if isinstance(i, int):
-            conversations = [conversations]
-        assert len(conversations) == 1, "Don't know why it is wrapped to a list"  # FIXME
+            sources = self.list_data_dict[i]
+            sources = [sources]
+        assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
         ann_indices = []
         frame_nums = 1
 
         # if jmage ignore
-        if 'image' in conversations[0]:
+        if 'image' in sources[0]:
             # print(sources[0]['image'])
             image_file = self.list_data_dict[i]['image']
             image_file = os.path.join(self.data_args.data_folder, image_file)
@@ -346,7 +370,7 @@ class LazySupervisedDataset(Dataset):
             conversations = preprocess_multimodal(copy.deepcopy([e["conversation"] for e in conversations]), self.data_args, modal_token)
         
         # main proccess
-        elif 'video' in conversations[0]:
+        elif 'video' in sources[0]:
             # video path proccessing            
             video_file = self.list_data_dict[i]['video']
             video_file = os.path.join(self.data_args.data_folder, video_file)
@@ -354,42 +378,44 @@ class LazySupervisedDataset(Dataset):
             all_frames = set()
             
             # # frame proccessing: uisng later
-            # try: 
-            #     if 'annotation' in sources[0]:
-            #         for ann in sources[0]['annotation']:
-            #             all_frames.update(list(ann.keys()))
-            #         all_frames = list(all_frames)
-            #         frame_nums = len(all_frames)
-            #         for ann in sources[0]['annotation']:
-            #             frame_list = list(ann.keys())
-            #             indices = []
-            #             for frame in frame_list:
-            #                 indices.append(all_frames.index(frame))
-            #             ann_indices.append(indices)
-            #     else: 
-            #         all_frames.add(0)
-            #         ann_indices.append([0])
+            try: 
+                if False and 'annotation' in sources[0]:
+                    for ann in sources[0]['annotation']:
+                        all_frames.update(list(ann.keys()))
+                    all_frames = list(all_frames)
+                    frame_nums = len(all_frames)
+                    for ann in sources[0]['annotation']:
+                        frame_list = list(ann.keys())
+                        indices = []
+                        for frame in frame_list:
+                            indices.append(all_frames.index(frame))
+                        ann_indices.append(indices)
+                else: 
+                    all_frames.add(0)
+                    ann_indices.append([0])
 
-            #     all_frames = [int(f) for f in all_frames]
-            #     video, frame, height, width = process_video(video_file, video_processor, aspect_ratio=self.data_args.image_aspect_ratio, num_frames=num_frames, frame_idx=all_frames) #frame [1,3,336,336]
-            # except Exception as e:
-            #     traceback.print_exc()
-            #     backup_idx = random.randint(0, len(self.list_data_dict)-1)
-            #     print(f"Encounted error when reading video {video_file}, use {backup_idx}-th example instead!!!")
-            #     return self.__getitem__(backup_idx)
+                all_frames = [int(f) for f in all_frames]
+                video, frame, height, width, _ = process_video(video_file, video_processor, aspect_ratio=self.data_args.image_aspect_ratio, num_frames=num_frames, frame_idx=all_frames) #frame [1,3,336,336]
+            except Exception as e:
+                traceback.print_exc()
+                backup_idx = random.randint(0, len(self.list_data_dict)-1)
+                print(f"Encounted error when reading video {video_file}, use {backup_idx}-th example instead!!!")
+                return self.__getitem__(backup_idx)
 
             # replement frame proccessing
             video, frame, height, width, duration = process_video(video_file, video_processor, aspect_ratio=self.data_args.image_aspect_ratio, num_frames=num_frames, frame_idx=all_frames) #frame [1,3,336,336]
 
             # place <video> tag to question head.
             modal_token = "<video>"
-            conversations = preprocess_multimodal(copy.deepcopy([e["conversation"] for e in conversations]), self.data_args, modal_token)
+            conversations = preprocess_multimodal(copy.deepcopy([e["conversation"] for e in sources]), self.data_args, modal_token)
             # print(conversations[0])
             # raise
-            # =>>>>>>>>>> time_stamps = preprocess_timestamps(copy.deepcopy([e["timestamp"] for e in conversations]))
+            time_stamps = preprocess_timestamps(copy.deepcopy(sources[0]["timestamp"]), duration, self.vocab_size)
+            print("Time stamps: ", time_stamps)
+            raise
         else:
             modal_token = None
-            conversations = copy.deepcopy([e["conversations"] for e in conversations])
+            conversations = copy.deepcopy([e["conversation"] for e in sources])
         
         print("Conversations: ", conversations[0])
 
