@@ -145,12 +145,17 @@ def preprocess_plain(
     sources: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
     modal_token: str = None,
+    llm_name_idx: int = 2 # Gemini -> need to fix
 ) -> Dict:
-    roles = {"human": "user", "gpt": "assistant"}
+
     conversations = []
     input_ids = []
     targets = []
     for source in sources:
+        # time token
+
+    
+
         # 1. apply chat template for input conversation
         assert len(source) == 2
         assert modal_token in source[0]['value']
@@ -220,23 +225,24 @@ def preprocess_multimodal(
     sources: Sequence[str],
     data_args: DataArguments,
     modal_token: str = None,
+    # llm_name_idx: int = 2 # Gemini -> need to fix
 ) -> Dict:
     is_multimodal = data_args.is_multimodal
     if not is_multimodal:
         return sources
 
     assert modal_token in MODAL_INDEX_MAP, f"Unsupported modal token {modal_token}."
-
     for source in sources:
-        for sentence in source:
-            if modal_token in sentence['value']:
-                sentence['value'] = sentence['value'].replace(modal_token, '').strip()
-                sentence['value'] = modal_token + '\n' + sentence['value']
-                sentence['value'] = sentence['value'].strip()
-            replace_token = modal_token
-            # TODO: fix this for multimedia, e.g., <video>, <audio>, etc.
-            sentence["value"] = sentence["value"].replace(modal_token, replace_token)
-
+        for event in source:
+            for sentence in event:
+                if sentence['value']:
+                    if modal_token in sentence['value']:
+                        sentence['value'] = sentence['value'].replace(modal_token, '').strip()
+                        sentence['value'] = modal_token + '\n' + sentence['value']
+                        sentence['value'] = sentence['value'].strip()
+                    replace_token = modal_token
+                    # TODO: fix this for multimedia, e.g., <video>, <audio>, etc.
+                    sentence["value"] = sentence["value"].replace(modal_token, replace_token)
     return sources
 
 
@@ -248,7 +254,9 @@ class LazySupervisedDataset(Dataset):
                  data_args: DataArguments):
         super(LazySupervisedDataset, self).__init__()
         list_data_dict = json.load(open(data_path, "r"))
-
+        
+        print(len(list_data_dict), "samples loaded from", data_path)
+        
         rank0_print("Formatting inputs...Skip in lazy mode")
         self.tokenizer = tokenizer
         self.list_data_dict = list_data_dict
@@ -275,18 +283,21 @@ class LazySupervisedDataset(Dataset):
         return length_list
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
-        sources = self.list_data_dict[i]
-        image_processor = self.data_args.image_processor
-        video_processor = self.data_args.video_processor
+        conversations = self.list_data_dict[i]
+        # =----- not need now: ignore
+        # image_processor = self.data_args.image_processor
+        # video_processor = self.data_args.video_processor
 
-        num_frames = NUM_FRAMES if self.data_args.num_frames is None else self.data_args.num_frames
+        # num_frames = NUM_FRAMES if self.data_args.num_frames is None else self.data_args.num_frames
  
         if isinstance(i, int):
-            sources = [sources]
-        assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
+            conversations = [conversations]
+        assert len(conversations) == 1, "Don't know why it is wrapped to a list"  # FIXME
         ann_indices = []
         frame_nums = 1
-        if 'image' in sources[0]:
+
+        # if jmage ignore
+        if 'image' in conversations[0]:
             # print(sources[0]['image'])
             image_file = self.list_data_dict[i]['image']
             image_file = os.path.join(self.data_args.data_folder, image_file)
@@ -301,72 +312,78 @@ class LazySupervisedDataset(Dataset):
                 return self.__getitem__(backup_idx)
             # place <image> tag to question head.
             modal_token = "<image>"
-            sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args, modal_token)
-        elif 'video' in sources[0]:
-            # print(sources[0]['video'])
+            conversations = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in conversations]), self.data_args, modal_token)
+        
+        # main proccess
+        elif 'video' in conversations[0]:
+            # video path proccessing            
             video_file = self.list_data_dict[i]['video']
             video_file = os.path.join(self.data_args.data_folder, video_file)
-
+            print("File exists:", os.path.exists(video_file))
             all_frames = set()
+            
+            # # frame proccessing: uisng later
+            # try: 
+            #     if 'annotation' in sources[0]:
+            #         for ann in sources[0]['annotation']:
+            #             all_frames.update(list(ann.keys()))
+            #         all_frames = list(all_frames)
+            #         frame_nums = len(all_frames)
+            #         for ann in sources[0]['annotation']:
+            #             frame_list = list(ann.keys())
+            #             indices = []
+            #             for frame in frame_list:
+            #                 indices.append(all_frames.index(frame))
+            #             ann_indices.append(indices)
+            #     else: 
+            #         all_frames.add(0)
+            #         ann_indices.append([0])
 
-            try: 
-                if 'annotation' in sources[0]:
-                    for ann in sources[0]['annotation']:
-                        all_frames.update(list(ann.keys()))
-                    all_frames = list(all_frames)
-                    frame_nums = len(all_frames)
-                    for ann in sources[0]['annotation']:
-                        frame_list = list(ann.keys())
-                        indices = []
-                        for frame in frame_list:
-                            indices.append(all_frames.index(frame))
-                        ann_indices.append(indices)
-                else: 
-                    all_frames.add(0)
-                    ann_indices.append([0])
-
-                all_frames = [int(f) for f in all_frames]
-                video, frame, height, width = process_video(video_file, video_processor, aspect_ratio=self.data_args.image_aspect_ratio, num_frames=num_frames, frame_idx=all_frames) #frame [1,3,336,336]
-            except Exception as e:
-                traceback.print_exc()
-                backup_idx = random.randint(0, len(self.list_data_dict)-1)
-                print(f"Encounted error when reading video {video_file}, use {backup_idx}-th example instead!!!")
-                return self.__getitem__(backup_idx)
+            #     all_frames = [int(f) for f in all_frames]
+            #     video, frame, height, width = process_video(video_file, video_processor, aspect_ratio=self.data_args.image_aspect_ratio, num_frames=num_frames, frame_idx=all_frames) #frame [1,3,336,336]
+            # except Exception as e:
+            #     traceback.print_exc()
+            #     backup_idx = random.randint(0, len(self.list_data_dict)-1)
+            #     print(f"Encounted error when reading video {video_file}, use {backup_idx}-th example instead!!!")
+            #     return self.__getitem__(backup_idx)
 
             # place <video> tag to question head.
             modal_token = "<video>"
-            sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args, modal_token)
+            conversations = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in conversations]), self.data_args, modal_token)
+            # =>>>>>>>>>> time_stamps = preprocess_timestamps(copy.deepcopy([e["timestamp"] for e in conversations]))
         else:
             modal_token = None
-            sources = copy.deepcopy([e["conversations"] for e in sources])
+            conversations = copy.deepcopy([e["conversations"] for e in conversations])
+        
+        print("Conversations: ", conversations[0])
 
-        # print(sources)
-        masks = []
+        # ========== segmentation mask: ignore
+        # masks = []
 
-        if 'annotation' in self.list_data_dict[i]:
-            if 'height' in self.list_data_dict[i]:
-                h = self.list_data_dict[i]['height']
-                w = self.list_data_dict[i]['width']
-            else:
-                h = None
-                w = None
+        # if 'annotation' in self.list_data_dict[i]:
+        #     if 'height' in self.list_data_dict[i]:
+        #         h = self.list_data_dict[i]['height']
+        #         w = self.list_data_dict[i]['width']
+        #     else:
+        #         h = None
+        #         w = None
 
-            for anns in self.list_data_dict[i]['annotation']:
-                for ann_idx in anns.keys():
-                    if anns[ann_idx]['segmentation'] is None:
-                        mask = np.zeros((height, width))
-                    else:
-                        mask = annToMask(anns[ann_idx]['segmentation'], h, w)
-                    masks.append(mask)
+        #     for anns in self.list_data_dict[i]['annotation']:
+        #         for ann_idx in anns.keys():
+        #             if anns[ann_idx]['segmentation'] is None:
+        #                 mask = np.zeros((height, width))
+        #             else:
+        #                 mask = annToMask(anns[ann_idx]['segmentation'], h, w)
+        #             masks.append(mask)
                     
-            if 'image' in self.list_data_dict[i]::
-                ann_indices = [[0]]*len(self.list_data_dict[i]['annotation'])
+        #     if 'image' in self.list_data_dict[i]:
+        #         ann_indices = [[0]]*len(self.list_data_dict[i]['annotation'])
                 
-            masks = np.array(masks)      
-        else:
-            masks = np.zeros((1, 336, 336))
+        #     masks = np.array(masks)      
+        # else:
+        #     masks = np.zeros((1, 336, 336))
             
-    
+        # ============ tokenizer proccessing ========
         if self.data_args.is_pretraining:
             data_dict = preprocess_plain(sources, self.tokenizer, modal_token=modal_token)
         else:
