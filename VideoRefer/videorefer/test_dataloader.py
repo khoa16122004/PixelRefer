@@ -9,6 +9,10 @@ import json
 #     use_fast=True,
 # )
 
+
+# video model
+vision_tower = model.get_vision_tower()
+
 data_args = DataArguments
 data_args.data_folder = 'videorefer/data/video'
 data_args.is_multimodal = True

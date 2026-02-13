@@ -23,7 +23,7 @@ import random
 import pathlib
 import traceback
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence, List
+from typing import Dict, Optional, Sequence, List, Literal
 
 # torch-related packages
 # NOTE: torch must be imported before transformers. Otherwise, `Segmentation fault (core dumped)` will occur.
@@ -103,6 +103,7 @@ class DataArguments:
     region_token_num: Optional[int] = field(default=8) # 32
     # Preprocess Arguments
     image_aspect_ratio: str = 'square'
+    llm_response_selector: Literal['GPT', 'Gemini', 'Qwen'] = field(default='Gemini', metadata={"help": "LLM response selector choice. Options: GPT, Gemini, or Qwen."})
 
 
 @dataclass
@@ -230,7 +231,7 @@ def preprocess_multimodal(
     is_multimodal = data_args.is_multimodal
     if not is_multimodal:
         return sources
-
+    
     assert modal_token in MODAL_INDEX_MAP, f"Unsupported modal token {modal_token}."
     for source in sources:
         for event in source:
@@ -254,7 +255,7 @@ class LazySupervisedDataset(Dataset):
                  data_args: DataArguments):
         super(LazySupervisedDataset, self).__init__()
         list_data_dict = json.load(open(data_path, "r"))
-        
+        list_data_dict = self.llm_response_selection(list_data_dict, data_args.llm_response_selector)
         print(len(list_data_dict), "samples loaded from", data_path)
         
         rank0_print("Formatting inputs...Skip in lazy mode")
@@ -273,6 +274,36 @@ class LazySupervisedDataset(Dataset):
             length_list.append(sum(len(conv['value'].split()) for conv in sample['conversations']) + img_tokens)
         return length_list
 
+
+    # input nhiễu mẫu của video_data
+    def llm_response_selection(self, video_data: Dict, llm_name: str) -> List[str]:
+        selected_video_data = copy.deepcopy(video_data)
+
+        for sample in selected_video_data:
+            new_conversations = []
+
+            for event_conversation in sample['conversation']:
+                new_message = [
+                    # {
+                    #     'from': 'human',
+                    #     'value': "Describe the video by following guidelines: you should give a paragraph with maximum 75 words; focus on the most obvious feature of the main objects <region>, <region> and <region>; infer the behavior of the object (feeding, resting, breathing, social interactions, defense); and describe the background in about 10 words. Focus on fish, reefs, aquatic plants, wrecks, human divers, and sea floor. Omit the words 'underwater' and 'shows' in the video\n<video>."
+                    # },
+                    {
+                        'from': llm_name,
+                        'value': next(
+                            message['value']
+                            for message in event_conversation
+                            if message['from'] == llm_name
+                        )
+                    }
+                ]
+
+                new_conversations.append(new_message)
+
+            sample['conversation'] = new_conversations
+
+        return selected_video_data
+
     @property
     def modality_lengths(self):
         length_list = []
@@ -286,7 +317,7 @@ class LazySupervisedDataset(Dataset):
         conversations = self.list_data_dict[i]
         # =----- not need now: ignore
         # image_processor = self.data_args.image_processor
-        # video_processor = self.data_args.video_processor
+        video_processor = self.data_args.video_processor
 
         # num_frames = NUM_FRAMES if self.data_args.num_frames is None else self.data_args.num_frames
  
@@ -312,7 +343,7 @@ class LazySupervisedDataset(Dataset):
                 return self.__getitem__(backup_idx)
             # place <image> tag to question head.
             modal_token = "<image>"
-            conversations = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in conversations]), self.data_args, modal_token)
+            conversations = preprocess_multimodal(copy.deepcopy([e["conversation"] for e in conversations]), self.data_args, modal_token)
         
         # main proccess
         elif 'video' in conversations[0]:
@@ -347,9 +378,14 @@ class LazySupervisedDataset(Dataset):
             #     print(f"Encounted error when reading video {video_file}, use {backup_idx}-th example instead!!!")
             #     return self.__getitem__(backup_idx)
 
+            # replement frame proccessing
+            video, frame, height, width, duration = process_video(video_file, video_processor, aspect_ratio=self.data_args.image_aspect_ratio, num_frames=num_frames, frame_idx=all_frames) #frame [1,3,336,336]
+
             # place <video> tag to question head.
             modal_token = "<video>"
-            conversations = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in conversations]), self.data_args, modal_token)
+            conversations = preprocess_multimodal(copy.deepcopy([e["conversation"] for e in conversations]), self.data_args, modal_token)
+            # print(conversations[0])
+            # raise
             # =>>>>>>>>>> time_stamps = preprocess_timestamps(copy.deepcopy([e["timestamp"] for e in conversations]))
         else:
             modal_token = None
