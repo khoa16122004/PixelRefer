@@ -144,6 +144,17 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_bias: str = "none"
 
 
+def preprocess_plain_new(
+    sources: Sequence[str],
+    timestamps: Sequence[List[float]],
+    duration:,
+    vocab_size:
+    tokenizer:
+    modal_token: str
+):
+
+
+
 def preprocess_plain(
     sources: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
@@ -157,7 +168,6 @@ def preprocess_plain(
     for source in sources:
         # time token
 
-    
 
         # 1. apply chat template for input conversation
         assert len(source) == 2
@@ -408,8 +418,6 @@ class LazySupervisedDataset(Dataset):
             # place <video> tag to question head.
             modal_token = "<video>"
             conversations = preprocess_multimodal(copy.deepcopy([e["conversation"] for e in sources]), self.data_args, modal_token)
-            # print(conversations[0])
-            # raise
             time_stamps = preprocess_timestamps(copy.deepcopy(sources[0]["timestamp"]), duration, self.vocab_size)
             print("Time stamps: ", time_stamps)
             raise
