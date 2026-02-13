@@ -36,7 +36,7 @@ from transformers.models.mixtral.modeling_mixtral import MixtralSparseMoeBlock
 import sys
 sys.path.append('./')
 from videorefer.model import *
-from videorefer.constants import NUM_FRAMES, IGNORE_INDEX, MODAL_INDEX_MAP
+from videorefer.constants import NUM_FRAMES, IGNORE_INDEX, MODAL_INDEX_MAP, NUM_TIME_BINS
 from videorefer.mm_utils import tokenizer_multimodal_token, process_video, process_image, annToMask
 from videorefer.videorefer_trainer import (VideoReferTrainer,
     get_peft_state_maybe_zero_3, get_peft_state_non_lora_maybe_zero_3, 
@@ -44,7 +44,7 @@ from videorefer.videorefer_trainer import (VideoReferTrainer,
 )
 import numpy as np
 
-from data_utils import timestampify_pt
+from data_utils import timestampify_pt, timestamp_to_time_token
 
 # NOTE: fast tokenizer warning issue: https://github.com/huggingface/transformers/issues/5486   
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -106,6 +106,7 @@ class DataArguments:
     # Preprocess Arguments
     image_aspect_ratio: str = 'square'
     llm_response_selector: Literal['GPT', 'Gemini', 'Qwen'] = field(default='Gemini', metadata={"help": "LLM response selector choice. Options: GPT, Gemini, or Qwen."})
+    is_pretraining: bool = False
 
 
 @dataclass
@@ -183,7 +184,7 @@ def preprocess(
     tokenizer: transformers.PreTrainedTokenizer,
     modal_token: str = None,
 ) -> Dict:
-    roles = {"human": "user", "gpt": "assistant"}
+    roles = {"human": "user", "gpt": "assistant", "Gemini": "assistant", "Qwen": "assistant", "chatgpt": "assistant"}
 
     # Apply prompt templates
     conversations = []
@@ -246,6 +247,47 @@ def preprocess_multimodal(
                     replace_token = modal_token
                     # TODO: fix this for multimedia, e.g., <video>, <audio>, etc.
                     sentence["value"] = sentence["value"].replace(modal_token, replace_token)
+    return sources
+
+
+def inject_time_tokens(
+    sources: Dict,
+    num_bins: int = 100,
+    duration: float = None
+) -> Dict:
+    """
+    Inject time tokens into the conversation based on timestamp information.
+    This modifies the conversation in-place.
+    """
+    if 'timestamp' in sources:
+        timestamps = sources["timestamp"]
+        conversations = sources["conversation"]
+        
+        # Ensure we have timestamps for each event
+        if len(conversations) == len(timestamps):
+            for i, event_conv in enumerate(conversations):
+                ts = timestamps[i]
+                # Handle potential nesting if timestamp is list of lists
+                start = ts[0]
+                end = ts[1]
+                
+                time_tokens = timestamp_to_time_token(start, end, duration, num_bins=num_bins)
+                time_str = "".join(time_tokens)
+                
+                # Find the assistant message to prepend/append timestamp
+                found_assistant = False
+                for msg in event_conv:
+                    # Check for assistant/gpt role. Assuming 'gpt' or 'assistant' or specific LLMs
+                    if msg['from'] in ['gpt', 'chatgpt', 'assistant', 'Gemini', 'Qwen']:
+                        # Vid2Seq format: <time_start><time_end> description
+                        msg['value'] = f"{time_str} {msg['value']}"
+                        found_assistant = True
+                        break # Only modify the first assistant response
+                
+                if not found_assistant:
+                    # Fallback: if no assistant message, maybe append to user? 
+                    # Or just ignore/print warning.
+                    pass
     return sources
 
 def preprocess_timestamps(timestamps: List[List[float]], duration: float, vocab_size: int) -> torch.Tensor:
@@ -407,12 +449,24 @@ class LazySupervisedDataset(Dataset):
 
             # place <video> tag to question head.
             modal_token = "<video>"
-            conversations = preprocess_multimodal(copy.deepcopy([e["conversation"] for e in sources]), self.data_args, modal_token)
-            # print(conversations[0])
+            
+            # NOTE: We must update sources in-place or assign back, because preprocess() uses sources.
+            # Using deepcopy without assignment means sources is not updated with <video> token.
+            sources[0]["conversation"] = preprocess_multimodal(
+                copy.deepcopy([sources[0]["conversation"]]), 
+                self.data_args, 
+                modal_token
+            )[0]
+            
+            # Inject time tokens into conversation
+            sources[0] = inject_time_tokens(sources[0], num_bins=NUM_TIME_BINS, duration=duration)
+            conversations = copy.deepcopy([e["conversation"] for e in sources])
+
+            
+            # time_stamps tensor is no longer needed since we tokenized them into the text
+            # time_stamps = preprocess_timestamps(...) 
+            # print("Time stamps: ", time_stamps)
             # raise
-            time_stamps = preprocess_timestamps(copy.deepcopy(sources[0]["timestamp"]), duration, self.vocab_size)
-            print("Time stamps: ", time_stamps)
-            raise
         else:
             modal_token = None
             conversations = copy.deepcopy([e["conversation"] for e in sources])
@@ -420,7 +474,7 @@ class LazySupervisedDataset(Dataset):
         print("Conversations: ", conversations[0])
 
         # ========== segmentation mask: ignore
-        # masks = []
+        masks = []
 
         # if 'annotation' in self.list_data_dict[i]:
         #     if 'height' in self.list_data_dict[i]:
@@ -446,10 +500,40 @@ class LazySupervisedDataset(Dataset):
         #     masks = np.zeros((1, 336, 336))
             
         # ============ tokenizer proccessing ========
+        # Ensure conversations is updated and ready
+        if 'conversation' in sources[0]:
+             # Merge all events into a single User -> Assistant turn
+             # s["conversation"] is [[msg], [msg]] -> Single Conversation
+             conversations = []
+             for s in sources:
+                 events = s["conversation"]
+                 # Extract all assistant responses (now with time tokens)
+                 # structure of event is [{'from': 'Gemini', 'value': '<t>...'}]
+                 
+                 # Join all parts with a separator (e.g., space or newline)
+                 # Assuming each event has 1 message which is the assistant response
+                 full_response_parts = []
+                 for event in events:
+                     for msg in event:
+                         full_response_parts.append(msg['value'])
+                 
+                 full_response = " ".join(full_response_parts)
+                 
+                 # Create the single-turn conversation
+                 # TODO: Make the system prompt configurable or random? 
+                 # For now, using a standard Vid2Seq-like prompt.
+                 user_prompt = "Describe the video in detail with timestamps."
+                 
+                 new_conv = [
+                     {'from': 'human', 'value': user_prompt},
+                     {'from': 'gpt', 'value': full_response}
+                 ]
+                 conversations.append(new_conv)
+        
         if self.data_args.is_pretraining:
-            data_dict = preprocess_plain(sources, self.tokenizer, modal_token=modal_token)
+            data_dict = preprocess_plain(conversations, self.tokenizer, modal_token=modal_token)
         else:
-            data_dict = preprocess(sources, self.tokenizer, modal_token=modal_token)
+            data_dict = preprocess(conversations, self.tokenizer, modal_token=modal_token)
 
         if isinstance(i, int):
             data_dict = dict(input_ids=data_dict["input_ids"][0], labels=data_dict["labels"][0])
@@ -635,6 +719,15 @@ def train(attn_implementation=None):
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
+
+    # Add time tokens to tokenizer
+    num_time_tokens = NUM_TIME_BINS
+    time_tokens = [f"<time_{i}>" for i in range(num_time_tokens)]
+    num_new_tokens = tokenizer.add_tokens(time_tokens)
+    if num_new_tokens > 0:
+        model.resize_token_embeddings(len(tokenizer))
+        rank0_print(f"Added {num_new_tokens} new time tokens to tokenizer and resized model embeddings.")
+
 
     if model_args.vision_tower is not None:
         # initialize vision encoder + multi-modal projector
