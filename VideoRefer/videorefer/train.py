@@ -44,7 +44,7 @@ from videorefer.videorefer_trainer import (VideoReferTrainer,
 )
 import numpy as np
 
-from data_utils import timestampify_pt, timestamp_to_time_token
+from data_utils import timestamp_to_time_token
 
 # NOTE: fast tokenizer warning issue: https://github.com/huggingface/transformers/issues/5486   
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -186,7 +186,7 @@ def preprocess(
     tokenizer: transformers.PreTrainedTokenizer,
     modal_token: str = None,
 ) -> Dict:
-    roles = {"human": "user", "gpt": "assistant", "Gemini": "assistant", "Qwen": "assistant", "chatgpt": "assistant"}
+    roles = {"human": "user", "gpt": "assistant", "Gemini": "assistant", "Qwen": "assistant", "GPT": "assistant"}
 
     # Apply prompt templates
     conversations = []
@@ -215,7 +215,9 @@ def preprocess(
 
                 instruction = tokenizer.apply_chat_template(message + tmp_message[:1], tokenize=False, add_generation_prompt=True)
                 conversation = tokenizer.apply_chat_template(message + tmp_message, tokenize=False, add_generation_prompt=False)
-
+                # print("instruction:", instruction)
+                # print("conversation:", conversation)
+                # raise
                 instruction_len = len(tokenizer_multimodal_token(instruction, tokenizer, modal_token, return_tensors='pt'))
                 conversation_len = len(tokenizer_multimodal_token(conversation, tokenizer, modal_token, return_tensors='pt'))
 
@@ -292,20 +294,6 @@ def inject_time_tokens(
                     # Or just ignore/print warning.
                     pass
     return sources
-
-def preprocess_timestamps(timestamps: List[List[float]], duration: float, vocab_size: int) -> torch.Tensor:
-    starts, ends = [], []
-
-    for timestamp in timestamps:
-        starts.append(timestamp[0])
-        ends.append(timestamp[1])
-
-
-    start_tensor = torch.tensor(starts, dtype=torch.float32)
-    end_tensor = torch.tensor(ends, dtype=torch.float32)
-
-    timestamp_tensor = timestampify_pt(start_tensor, end_tensor, duration, vocabulary_size=vocab_size)
-    return timestamp_tensor
 
 class LazySupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
@@ -455,45 +443,44 @@ class LazySupervisedDataset(Dataset):
             # Inject time tokens into conversation
             sources[0] = inject_time_tokens(sources[0], num_bins=NUM_TIME_BINS, duration=duration)
             conversations = copy.deepcopy([e["conversation"] for e in sources])
-            
         else:
             modal_token = None
             conversations = copy.deepcopy([e["conversation"] for e in sources])
         
 
-        # ========== segmentation mask: ignore
+        # # ========== segmentation mask: ignore
         masks = []
 
-        if 'annotation' in self.list_data_dict[i]:
-            if 'height' in self.list_data_dict[i]:
-                h = self.list_data_dict[i]['height']
-                w = self.list_data_dict[i]['width']
-            else:
-                h = None
-                w = None
+        # if 'annotation' in self.list_data_dict[i]:
+        #     if 'height' in self.list_data_dict[i]:
+        #         h = self.list_data_dict[i]['height']
+        #         w = self.list_data_dict[i]['width']
+        #     else:
+        #         h = None
+        #         w = None
 
-            for anns in self.list_data_dict[i]['annotation']:
-                for ann_idx in anns.keys():
-                    if anns[ann_idx]['segmentation'] is None:
-                        mask = np.zeros((height, width))
-                    else:
-                        mask = annToMask(anns[ann_idx]['segmentation'], h, w)
-                    masks.append(mask)
+        #     for anns in self.list_data_dict[i]['annotation']:
+        #         for ann_idx in anns.keys():
+        #             if anns[ann_idx]['segmentation'] is None:
+        #                 mask = np.zeros((height, width))
+        #             else:
+        #                 mask = annToMask(anns[ann_idx]['segmentation'], h, w)
+        #             masks.append(mask)
                     
-            if 'image' in self.list_data_dict[i]:
-                ann_indices = [[0]]*len(self.list_data_dict[i]['annotation'])
+        #     if 'image' in self.list_data_dict[i]:
+        #         ann_indices = [[0]]*len(self.list_data_dict[i]['annotation'])
                 
-            masks = np.array(masks)      
-        else:
-            masks = np.zeros((1, 336, 336))
+        #     masks = np.array(masks)      
+        # else:
+        #     masks = np.zeros((1, 336, 336))
             
         # ============ tokenizer proccessing ========
         # Ensure conversations is updated and ready
         if 'conversation' in sources[0]:
-             # Merge all events into a single User -> Assistant turn
-             # s["conversation"] is [[msg], [msg]] -> Single Conversation
-             conversations = []
-             for s in sources:
+            # Merge all events into a single User -> Assistant turn
+            # s["conversation"] is [[msg], [msg]] -> Single Conversation
+            conversations = []
+            for s in sources:
                 events = s["conversation"]
                 # Extract all assistant responses (now with time tokens)
                 # structure of event is [{'from': 'Gemini', 'value': '<t>...'}]

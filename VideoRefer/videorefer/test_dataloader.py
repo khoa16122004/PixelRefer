@@ -41,7 +41,7 @@ data_args.is_pretraining = False
 data_args.video_processor = transformers.SiglipImageProcessor.from_pretrained("google/siglip-so400m-patch14-384")
 
 dataset = LazySupervisedDataset(
-    data_path='videorefer/data/marine_video_token.json', # USE ABSOLUTE PATH
+    data_path='videorefer/data/marine.json', # USE ABSOLUTE PATH
     tokenizer=tokenizer,
     data_args=data_args
 )
@@ -59,9 +59,12 @@ label_ids = sample['labels']
 print("\n--- Label IDs ---")
 print(label_ids)
 
-decoded_text = dataset.tokenizer.decode(input_ids, skip_special_tokens=False)
+
+# Filter out negative IDs (e.g. -200 for image, -201 for video) which cause OverflowError in decode
+valid_input_ids = input_ids[input_ids >= 0]
+decoded_text = tokenizer.decode(valid_input_ids, skip_special_tokens=False)
 print("\n--- Decoded Sample ---")
-print(decoded_text[0])
+print(decoded_text)
 print("----------------------")
 
 # Verify if any time token exists in decoded text
