@@ -145,14 +145,6 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_bias: str = "none"
 
 
-def preprocess_plain_new(
-    sources: Sequence[str],
-    timestamps: Sequence[List[float]],
-    duration:,
-    vocab_size:
-    tokenizer:
-    modal_token: str
-):
 
 
 

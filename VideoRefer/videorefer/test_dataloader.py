@@ -31,7 +31,7 @@ print(f"Added {num_time_tokens} time tokens to tokenizer.")
 
 # ============= Data Args setup
 data_args = DataArguments()
-data_args.data_folder = '/home/hkduy/workplace/marine/PixelRefer/VideoRefer/videorefer/data/video' # USE ABSOLUTE PATH
+data_args.data_folder = 'videorefer/data/video' # USE ABSOLUTE PATH
 data_args.is_multimodal = True
 data_args.image_aspect_ratio = 'pad'
 data_args.is_pretraining = False
@@ -41,7 +41,7 @@ data_args.is_pretraining = False
 data_args.video_processor = transformers.SiglipImageProcessor.from_pretrained("google/siglip-so400m-patch14-384")
 
 dataset = LazySupervisedDataset(
-    data_path='/home/hkduy/workplace/marine/PixelRefer/VideoRefer/videorefer/data/marine.json', # USE ABSOLUTE PATH
+    data_path='videorefer/data/marine.json', # USE ABSOLUTE PATH
     tokenizer=tokenizer,
     data_args=data_args
 )
