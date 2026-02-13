@@ -215,3 +215,38 @@ def process_event_timestamps(
         'event_attention_mask': attention_mask,
         'num_events': len(captions)
     }
+
+
+def timestamp_to_time_token(
+    start: float,
+    end: float,
+    duration: float,
+    num_bins: int = 100
+) -> List[str]:
+    """Convert a timestamp range (start, end) and video duration to time token strings.
+    
+    Args:
+        start: Start time in seconds.
+        end: End time in seconds.
+        duration: Video duration in seconds.
+        num_bins: Number of bins for time quantization. Default: 100.
+    
+    Returns:
+        List of two strings: [start_token_str, end_token_str]
+    """
+    if duration <= 0:
+        duration = 1.0  # Avoid division by zero
+        
+    start = max(0.0, min(start, duration))
+    end = max(0.0, min(end, duration))
+    
+    max_offset = num_bins - 1
+    
+    start_idx = int(round((start / duration) * max_offset))
+    end_idx = int(round((end / duration) * max_offset))
+    
+    # Clamp indices to ensure they are within [0, num_bins-1]
+    start_idx = max(0, min(start_idx, max_offset))
+    end_idx = max(0, min(end_idx, max_offset))
+    
+    return [f"<time_{start_idx}>", f"<time_{end_idx}>"]
