@@ -186,6 +186,10 @@ class VideoReferMetaForCausalLM(ABC):
             return input_ids, attention_mask, past_key_values, None, labels
 
         mm_features = self.encode_images_or_videos(images)
+
+        # test bug
+        frame = None
+
         if frame is not None:
             first_frame_features = self.get_model().get_vision_tower()(torch.cat(frame, dim=0))
             mask_feats, region_token_nums = self.get_model().region_encoder(first_frame_features, masks, mm_features, ann_indices, frame_nums)
